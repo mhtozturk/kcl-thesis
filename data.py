@@ -23,7 +23,7 @@ class Data:
     NEGATIVE_PATTERN = re.compile(r'[(),]')
     POSITIVE_PATTERN = re.compile(r',')
 
-    def __init__(self, ticker: str) -> None:
+    def __init__(self, ticker: str):
         # used to obtain CIK (central index key)
         self.ticker = ticker
         # used to obtain metadata
@@ -89,12 +89,12 @@ class Data:
         # extracting [10-Q] form
         form = soup.find('document')
         # DEBUGGING: printing out file's name for easy access if needed
-        name = form.find('filename').get_text(strip = True)
+        name = form.filename.find(text = True, recursive = False).strip()
         print(f"Current filename:\t {name}")
 
         # splitting into seperate pages for easier parsing
         # <hr> tag is used consistently in filings for page breaks
-        hr_breaks = form.find_all(lambda tag: tag.name == 'hr' and 'page-break-after: always' in tag.get('style', ''))
+        hr_breaks = form.find_all(lambda tag: tag.name == 'hr' and 'page-break-after:always' in tag.get('style', ''))
         # transforming into string objects for regex
         hr_breaks = [str(hr) for hr in hr_breaks]
         form_str = str(form)
@@ -105,30 +105,36 @@ class Data:
 
         # getting numerical data
         for page in form_pages:
-            page_soup = BeautifulSoup(page, 'html5')
+            page_soup = BeautifulSoup(page, 'html5lib')
             # operations/income/earnings statement (page)
-            if ((page_soup.find(lambda tag: tag.name == 'div' and 'text-align: center' in tag.get('style', '') and 
+            if ((page_soup.find(lambda tag: tag.name == 'div' and 'text-align:center' in tag.get('style', '') and 
                            any(term in tag.get_text(strip = True).lower() for term in ['income', 'operations', 'earnings'])
                            and 'comprehensive' not in tag.get_text(strip = True).lower() and tag.find('table') == None)) or 
-                    (page_soup.find(lambda tag: tag.name == 'p' and 'text-align: center' in tag.get('style', '') and 
+                    (page_soup.find(lambda tag: tag.name == 'p' and 'text-align:center' in tag.get('style', '') and 
                            any(term in tag.get_text(strip = True).lower() for term in ['income', 'operations', 'earnings'])
                            and 'comprehensive' not in tag.get_text(strip = True).lower() and tag.find('table') == None))):
-                
+                # DEBUGGING
+                print("Page found")
+
                 # finding the table that shows the statement
                 table = page_soup.find(lambda tag: tag.name == 'table' and 
                                   float(tag.get('style', '').split('width:')[1].split(';')[0].strip()[:-1]) > 99.5)
                 # checking if a table is found
                 if table == None:
                     continue
+                # DEBUGGING
+                print("Table found")
                 
                 # parsing through rows
                 for row in table.find_all('tr'):
                     # getting elements in the row
                     cells = [td.get_text(strip = True).lower() for td in row.find_all('td') 
-                             if td.get_text(strip = True != '$') or td.get_text(strip = True != '')]
+                             if td.get_text(strip = True) != '$' and td.get_text(strip = True) != '']
                     # at least 2 elements in a row
                     if len(cells) < 2:
                         continue
+                    # DEBUGGING
+                    # print('Row:', cells)
                     # keyword name
                     key = cells[0]
 
@@ -148,6 +154,8 @@ class Data:
                                 except:
                                     data[term] = None
 
+        return data
+
     def process_annual(self, accession_number: str) -> dict:
         """Method for processing annual [10-K] filings.
 
@@ -158,9 +166,11 @@ class Data:
     def process_filings(self) -> None:
         """Master method for processing filings.
         """
-        for idx in range(len(self.metadata)):
+        # for idx in range(len(self.metadata)):
+        for idx in range(2):
             if self.metadata.iloc[idx]['form'] == '10-Q':
-                q = self.process_quarterly(self.metadata.iloc[idx]['accessionNumber'])
-                self.data[self.metadata.iloc[idx]['reportDate']] = q
+                self.data[self.metadata.iloc[idx]['reportDate']] = self.process_quarterly(self.metadata.iloc[idx]['accessionNumber'])
+            elif self.metadata.iloc[idx]['form'] == '10-K':
+                continue
 
 
