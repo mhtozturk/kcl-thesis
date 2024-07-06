@@ -1,3 +1,4 @@
+import re
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -7,7 +8,20 @@ class Data:
     This class gathers, processes, and prepares SEC Filing data obtained via
     SEC EDGAR API.
     """
-    AGENT = {'User-Agent': 'mehmet.ozturk@kcl.ac.uk'} # agent for accessing API
+    # CONSTANTS:
+    # agent for accessing API
+    AGENT = {'User-Agent': 'mehmet.ozturk@kcl.ac.uk'}
+    # operations/income/earnings statement target terms
+    OIE_TERMS = {
+        'revenue': ['revenue', 'total revenue', 'net sale', 'total net sales'],
+        'gross profit': ['gross profit', 'gross margin'],
+        'operating income': ['operating income', 'income from operations', 'loss from operations'],
+        'net income': ['net income', 'net income (loss)', 'net loss'],
+        'eps': ['basic', 'basic earnings per share']
+    }
+    # regex's for formatting
+    NEGATIVE_PATTERN = re.compile(r'[(),]')
+    POSITIVE_PATTERN = re.compile(r',')
 
     def __init__(self, ticker: str) -> None:
         # used to obtain CIK (central index key)
@@ -55,7 +69,7 @@ class Data:
         :param accession_number: Unique access number for each filing.
         :rtype: Dictionary.
         """
-        # accessing the txt file that contains all HTML source code for a filing
+        # accessing the [.txt] file that contains all HTML source code for a filing
         filing = requests.get(
             f'https://www.sec.gov/Archives/edgar/data/{self.cik}/{accession_number.replace("-", "")}/{accession_number}.txt',
             headers = Data.AGENT
@@ -74,9 +88,65 @@ class Data:
         soup = BeautifulSoup(filing.content, 'lxml')
         # extracting [10-Q] form
         form = soup.find('document')
-        # DEBUGGING: printing out file's name for easy access to source code
-        name = form.find('filename').get_text(strip=True)
+        # DEBUGGING: printing out file's name for easy access if needed
+        name = form.find('filename').get_text(strip = True)
         print(f"Current filename:\t {name}")
+
+        # splitting into seperate pages for easier parsing
+        # <hr> tag is used consistently in filings for page breaks
+        hr_breaks = form.find_all(lambda tag: tag.name == 'hr' and 'page-break-after: always' in tag.get('style', ''))
+        # transforming into string objects for regex
+        hr_breaks = [str(hr) for hr in hr_breaks]
+        form_str = str(form)
+        # creating regular expression for splitting pages
+        hr_regex = '|'.join(map(re.escape, hr_breaks))
+        
+        form_pages = re.split(hr_regex, form_str)
+
+        # getting numerical data
+        for page in form_pages:
+            page_soup = BeautifulSoup(page, 'html5')
+            # operations/income/earnings statement (page)
+            if ((page_soup.find(lambda tag: tag.name == 'div' and 'text-align: center' in tag.get('style', '') and 
+                           any(term in tag.get_text(strip = True).lower() for term in ['income', 'operations', 'earnings'])
+                           and 'comprehensive' not in tag.get_text(strip = True).lower() and tag.find('table') == None)) or 
+                    (page_soup.find(lambda tag: tag.name == 'p' and 'text-align: center' in tag.get('style', '') and 
+                           any(term in tag.get_text(strip = True).lower() for term in ['income', 'operations', 'earnings'])
+                           and 'comprehensive' not in tag.get_text(strip = True).lower() and tag.find('table') == None))):
+                
+                # finding the table that shows the statement
+                table = page_soup.find(lambda tag: tag.name == 'table' and 
+                                  float(tag.get('style', '').split('width:')[1].split(';')[0].strip()[:-1]) > 99.5)
+                # checking if a table is found
+                if table == None:
+                    continue
+                
+                # parsing through rows
+                for row in table.find_all('tr'):
+                    # getting elements in the row
+                    cells = [td.get_text(strip = True).lower() for td in row.find_all('td') 
+                             if td.get_text(strip = True != '$') or td.get_text(strip = True != '')]
+                    # at least 2 elements in a row
+                    if len(cells) < 2:
+                        continue
+                    # keyword name
+                    key = cells[0]
+
+                    for term, variations in Data.OIE_TERMS.items():
+                        if any(word in key for word in variations): 
+                            if term not in data.keys():
+                                try:
+                                    # the value we are interested in for the term
+                                    value = cells[1]
+                                    # formatting vaue
+                                    if '(' in value:
+                                        value = -float(Data.NEGATIVE_PATTERN.sub('', value)) if '.' in value else int(Data.NEGATIVE_PATTERN.sub('', value))
+                                        data[term] = value
+                                    else:
+                                        value = float(Data.POSITIVE_PATTERN.sub('', value)) if '.' in value else int(Data.POSITIVE_PATTERN.sub('', value))
+                                        data[term] = value
+                                except:
+                                    data[term] = None
 
     def process_annual(self, accession_number: str) -> dict:
         """Method for processing annual [10-K] filings.
